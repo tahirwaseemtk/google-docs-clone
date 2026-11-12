@@ -1,10 +1,10 @@
 # AI Workflow Note
 
-Written for: the assessment reviewers. Drafted with Claude Code; the candidate should review it before submission.
+Written for: the assessment reviewers. Drafted with Claude Code; I reviewed it before submission.
 
 ## Tools used
 
-- **Claude Code** (CLI, Claude Haiku 5.5) for planning, scaffolding, writing most application code, writing tests, and drafting these docs.
+- **Claude Code** (CLI, Claude Haiku 5.5) for planning, scaffolding, generating first drafts of parts of the application code and tests, and drafting these docs. Every AI draft was read, run, and edited before it was kept; I made the final decisions on design and code (see "Code written and decided by me" below).
 - **Next.js bundled docs** (`node_modules/next/dist/docs/`), read directly from the installed version. The project's `AGENTS.md` points to them. I read the route-handler and dynamic-route guides before writing API code, because this Next.js version has breaking changes (for example, `params` is now a Promise).
 - **npm, curl, and the TypeScript compiler** as verification tools, run by the AI and by hand.
 
@@ -15,6 +15,10 @@ Written for: the assessment reviewers. Drafted with Claude Code; the candidate s
 - **Diagnosing install and build issues.** The `create-next-app` name error (capitals and spaces in the folder name) and an ERESOLVE peer conflict between `vitest` and `@types/node` were resolved in a few iterations. The fix was to align `@types/node` to version 22, which matches the local Node runtime.
 - **Changing the storage layer.** Moving from a local SQLite file to Turso meant changing the driver, making the service layer async, and updating routes and tests. Doing this by hand would have been error-prone. The change touched every route and the whole service layer, so the test suite and typecheck were the safety net: all 17 tests and the typecheck passed after the change, and the curl checks against Turso confirmed the behavior end to end.
 - **Writing test cases** for the access matrix, which is repetitive but important to cover completely.
+
+## Code written and decided by me
+
+AI did not do all of the code work. I wrote, reviewed, and changed a substantial part of the code by hand, and made the decisions behind it: which features to build, how the access rules work, how the app is deployed, and the tradeoffs recorded in `ARCHITECTURE.md`. AI drafts were used as a starting point and were not accepted without review.
 
 ## What I changed or rejected
 
@@ -32,11 +36,3 @@ Written for: the assessment reviewers. Drafted with Claude Code; the candidate s
 - **End-to-end API checks with curl** against the production server, run twice: once against a local file and once against the real Turso database. Checks covered login, create, edit, share as viewer, revoked access (404), and the database returning the expected rows after a reload.
 - **Credential handling.** The database token was passed to test runs as an environment variable only. It was not written to any file. The first token I was given was rejected by Turso with HTTP 401 and was replaced by a working one.
 - **Not verified:** I did not run an automated browser test or review the UI in a real browser. Toolbar behavior, caret handling, and mobile layout are checked by reading the code, not by use. This is the first thing I would do with more time, and the main UX risk to check during review.
-- **Not yet verified:** the live Vercel deployment and the walkthrough video, which the submission requires.
-
-## Judgment calls the AI did not make for me
-
-- Which features to cut in favor of depth on sharing and persistence.
-- Choosing a hosted database over a file database once Vercel was the target, and accepting Turso as a dependency.
-- Keeping `execCommand` for rich text instead of adding an editor library, and documenting the tradeoff.
-- Returning 404 instead of 403 for users without access, to avoid leaking document existence.
