@@ -17,8 +17,8 @@ import {
  */
 export async function POST(req: NextRequest) {
   try {
-    const db = getDb();
-    const user = requireUser(req, db);
+    const db = await getDb();
+    const user = await requireUser(req, db);
 
     const form = await req.formData().catch(() => null);
     const file = form?.get("file");
@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
       throw new AppError(413, "The imported document is too large to save");
     }
 
-    const id = createDocument(db, user.id, {
+    const id = await createDocument(db, user.id, {
       title: titleFromFilename(file.name),
       contentHtml,
     });

@@ -6,15 +6,19 @@ import { findUserByUsername } from "@/lib/store";
 import { sessionSchema } from "@/lib/validation";
 
 export async function GET(req: NextRequest) {
-  const user = currentUser(req, getDb());
-  return NextResponse.json({ user });
+  try {
+    const user = await currentUser(req, await getDb());
+    return NextResponse.json({ user });
+  } catch (err) {
+    return errorResponse(err);
+  }
 }
 
 /** Mock sign-in: picks a seeded account by username. No password. */
 export async function POST(req: NextRequest) {
   try {
     const { username } = sessionSchema.parse(await readJson(req));
-    const user = findUserByUsername(getDb(), username);
+    const user = await findUserByUsername(await getDb(), username);
     if (!user) throw new AppError(404, `No demo account named "${username}"`);
 
     const res = NextResponse.json({ user });
@@ -22,6 +26,7 @@ export async function POST(req: NextRequest) {
       httpOnly: true,
       sameSite: "lax",
       path: "/",
+      secure: process.env.NODE_ENV === "production",
       maxAge: 60 * 60 * 24 * 7,
     });
     return res;

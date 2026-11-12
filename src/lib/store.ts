@@ -18,44 +18,44 @@ import type {
 
 const DEFAULT_TITLE = "Untitled document";
 
-interface DocRow {
-  id: string;
-  title: string;
-  content_html: string;
-  owner_id: string;
-  owner_name: string;
-  created_at: string;
-  updated_at: string;
+/** Runs a query and returns each row as a plain object keyed by column name. */
+async function all<T>(db: Db, sql: string, args: (string | number | null)[] = []): Promise<T[]> {
+  const result = await db.execute({ sql, args });
+  return result.rows.map(
+    (row) => Object.fromEntries(result.columns.map((col, i) => [col, row[i]])) as T,
+  );
 }
 
-export function listUsers(db: Db): UserOption[] {
-  return db
-    .prepare("SELECT username, display_name AS displayName FROM users ORDER BY username")
-    .all() as UserOption[];
+async function first<T>(db: Db, sql: string, args: (string | number | null)[] = []): Promise<T | undefined> {
+  return (await all<T>(db, sql, args))[0];
 }
 
-export function findUserById(db: Db, id: string): SessionUser | undefined {
-  return db
-    .prepare("SELECT id, username, display_name AS displayName FROM users WHERE id = ?")
-    .get(id) as SessionUser | undefined;
+export async function listUsers(db: Db): Promise<UserOption[]> {
+  return all<UserOption>(db, "SELECT username, display_name AS displayName FROM users ORDER BY username");
 }
 
-export function findUserByUsername(db: Db, username: string): SessionUser | undefined {
-  return db
-    .prepare("SELECT id, username, display_name AS displayName FROM users WHERE username = ?")
-    .get(username.trim().toLowerCase()) as SessionUser | undefined;
+export async function findUserById(db: Db, id: string): Promise<SessionUser | undefined> {
+  return first<SessionUser>(db, "SELECT id, username, display_name AS displayName FROM users WHERE id = ?", [id]);
+}
+
+export async function findUserByUsername(db: Db, username: string): Promise<SessionUser | undefined> {
+  return first<SessionUser>(
+    db,
+    "SELECT id, username, display_name AS displayName FROM users WHERE username = ?",
+    [username.trim().toLowerCase()],
+  );
 }
 
 /** Returns the caller's role on a document, or null if they have no access. */
-export function getAccess(db: Db, documentId: string, userId: string): AccessRole | null {
-  const doc = db.prepare("SELECT owner_id FROM documents WHERE id = ?").get(documentId) as
-    | { owner_id: string }
-    | undefined;
+export async function getAccess(db: Db, documentId: string, userId: string): Promise<AccessRole | null> {
+  const doc = await first<{ owner_id: string }>(db, "SELECT owner_id FROM documents WHERE id = ?", [documentId]);
   if (!doc) return null;
   if (doc.owner_id === userId) return "owner";
-  const share = db
-    .prepare("SELECT role FROM document_shares WHERE document_id = ? AND user_id = ?")
-    .get(documentId, userId) as { role: ShareRole } | undefined;
+  const share = await first<{ role: ShareRole }>(
+    db,
+    "SELECT role FROM document_shares WHERE document_id = ? AND user_id = ?",
+    [documentId, userId],
+  );
   return share?.role ?? null;
 }
 
@@ -65,8 +65,8 @@ const ROLE_RANK: Record<AccessRole, number> = { viewer: 1, editor: 2, owner: 3 }
  * Throws 404 when the user cannot see the document at all (so its existence is not leaked),
  * and 403 when they can see it but lack the required role.
  */
-function requireAccess(db: Db, documentId: string, userId: string, minimum: AccessRole): AccessRole {
-  const role = getAccess(db, documentId, userId);
+async function requireAccess(db: Db, documentId: string, userId: string, minimum: AccessRole): Promise<AccessRole> {
+  const role = await getAccess(db, documentId, userId);
   if (!role) throw new AppError(404, "Document not found");
   if (ROLE_RANK[role] < ROLE_RANK[minimum]) {
     throw new AppError(
@@ -77,28 +77,35 @@ function requireAccess(db: Db, documentId: string, userId: string, minimum: Acce
   return role;
 }
 
-function toSummary(row: { id: string; title: string; owner_name: string; updated_at: string }): DocumentSummary {
+interface SummaryRow {
+  id: string;
+  title: string;
+  updated_at: string;
+  owner_name: string;
+}
+
+function toSummary(row: SummaryRow): DocumentSummary {
   return { id: row.id, title: row.title, ownerName: row.owner_name, updatedAt: row.updated_at };
 }
 
-export function listDocumentsForUser(db: Db, userId: string): DocumentList {
-  const owned = db
-    .prepare(
-      `SELECT d.id, d.title, d.updated_at, u.display_name AS owner_name
-       FROM documents d JOIN users u ON u.id = d.owner_id
-       WHERE d.owner_id = ? ORDER BY d.updated_at DESC`,
-    )
-    .all(userId) as Array<{ id: string; title: string; updated_at: string; owner_name: string }>;
+export async function listDocumentsForUser(db: Db, userId: string): Promise<DocumentList> {
+  const owned = await all<SummaryRow>(
+    db,
+    `SELECT d.id, d.title, d.updated_at, u.display_name AS owner_name
+     FROM documents d JOIN users u ON u.id = d.owner_id
+     WHERE d.owner_id = ? ORDER BY d.updated_at DESC`,
+    [userId],
+  );
 
-  const shared = db
-    .prepare(
-      `SELECT d.id, d.title, d.updated_at, u.display_name AS owner_name, s.role
-       FROM document_shares s
-       JOIN documents d ON d.id = s.document_id
-       JOIN users u ON u.id = d.owner_id
-       WHERE s.user_id = ? ORDER BY d.updated_at DESC`,
-    )
-    .all(userId) as Array<{ id: string; title: string; updated_at: string; owner_name: string; role: ShareRole }>;
+  const shared = await all<SummaryRow & { role: ShareRole }>(
+    db,
+    `SELECT d.id, d.title, d.updated_at, u.display_name AS owner_name, s.role
+     FROM document_shares s
+     JOIN documents d ON d.id = s.document_id
+     JOIN users u ON u.id = d.owner_id
+     WHERE s.user_id = ? ORDER BY d.updated_at DESC`,
+    [userId],
+  );
 
   return {
     owned: owned.map(toSummary),
@@ -106,45 +113,55 @@ export function listDocumentsForUser(db: Db, userId: string): DocumentList {
   };
 }
 
-export function createDocument(
+export async function createDocument(
   db: Db,
   ownerId: string,
   input: { title?: string; contentHtml?: string },
-): string {
+): Promise<string> {
   const id = randomUUID();
   const now = new Date().toISOString();
-  db.prepare(
-    `INSERT INTO documents (id, title, content_html, owner_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    id,
-    input.title?.trim() || DEFAULT_TITLE,
-    sanitizeContent(input.contentHtml ?? ""),
-    ownerId,
-    now,
-    now,
-  );
+  await db.execute({
+    sql: `INSERT INTO documents (id, title, content_html, owner_id, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?)`,
+    args: [
+      id,
+      input.title?.trim() || DEFAULT_TITLE,
+      sanitizeContent(input.contentHtml ?? ""),
+      ownerId,
+      now,
+      now,
+    ],
+  });
   return id;
 }
 
-export function getDocumentDetail(db: Db, documentId: string, userId: string): DocumentDetail {
-  const role = getAccess(db, documentId, userId);
+export async function getDocumentDetail(db: Db, documentId: string, userId: string): Promise<DocumentDetail> {
+  const role = await getAccess(db, documentId, userId);
   if (!role) throw new AppError(404, "Document not found");
 
-  const row = db
-    .prepare(
-      `SELECT d.id, d.title, d.content_html, d.owner_id, d.created_at, d.updated_at, u.display_name AS owner_name
-       FROM documents d JOIN users u ON u.id = d.owner_id WHERE d.id = ?`,
-    )
-    .get(documentId) as DocRow;
+  const row = await first<{
+    id: string;
+    title: string;
+    content_html: string;
+    owner_id: string;
+    owner_name: string;
+    created_at: string;
+    updated_at: string;
+  }>(
+    db,
+    `SELECT d.id, d.title, d.content_html, d.owner_id, d.created_at, d.updated_at, u.display_name AS owner_name
+     FROM documents d JOIN users u ON u.id = d.owner_id WHERE d.id = ?`,
+    [documentId],
+  );
+  if (!row) throw new AppError(404, "Document not found");
 
-  const shares = db
-    .prepare(
-      `SELECT u.id AS userId, u.username, u.display_name AS displayName, s.role
-       FROM document_shares s JOIN users u ON u.id = s.user_id
-       WHERE s.document_id = ? ORDER BY u.username`,
-    )
-    .all(documentId) as ShareInfo[];
+  const shares = await all<ShareInfo>(
+    db,
+    `SELECT u.id AS userId, u.username, u.display_name AS displayName, s.role
+     FROM document_shares s JOIN users u ON u.id = s.user_id
+     WHERE s.document_id = ? ORDER BY u.username`,
+    [documentId],
+  );
 
   return {
     id: row.id,
@@ -159,59 +176,70 @@ export function getDocumentDetail(db: Db, documentId: string, userId: string): D
   };
 }
 
-export function updateDocument(
+export async function updateDocument(
   db: Db,
   documentId: string,
   userId: string,
   patch: { title?: string; contentHtml?: string },
-): void {
-  requireAccess(db, documentId, userId, "editor");
+): Promise<void> {
+  await requireAccess(db, documentId, userId, "editor");
 
   const sets: string[] = [];
-  const values: unknown[] = [];
+  const args: string[] = [];
   if (patch.title !== undefined) {
     sets.push("title = ?");
-    values.push(patch.title.trim() || DEFAULT_TITLE);
+    args.push(patch.title.trim() || DEFAULT_TITLE);
   }
   if (patch.contentHtml !== undefined) {
     sets.push("content_html = ?");
-    values.push(sanitizeContent(patch.contentHtml));
+    args.push(sanitizeContent(patch.contentHtml));
   }
   if (sets.length === 0) return;
 
   sets.push("updated_at = ?");
-  values.push(new Date().toISOString(), documentId);
-  db.prepare(`UPDATE documents SET ${sets.join(", ")} WHERE id = ?`).run(...values);
+  args.push(new Date().toISOString(), documentId);
+  await db.execute({ sql: `UPDATE documents SET ${sets.join(", ")} WHERE id = ?`, args });
 }
 
-export function deleteDocument(db: Db, documentId: string, userId: string): void {
-  requireAccess(db, documentId, userId, "owner");
-  db.prepare("DELETE FROM documents WHERE id = ?").run(documentId);
+export async function deleteDocument(db: Db, documentId: string, userId: string): Promise<void> {
+  await requireAccess(db, documentId, userId, "owner");
+  // Delete shares explicitly: foreign-key cascades are not guaranteed on every connection.
+  await db.batch(
+    [
+      { sql: "DELETE FROM document_shares WHERE document_id = ?", args: [documentId] },
+      { sql: "DELETE FROM documents WHERE id = ?", args: [documentId] },
+    ],
+    "write",
+  );
 }
 
 /** Grants (or changes) a user's role on a document. Only the owner may share. */
-export function shareDocument(
+export async function shareDocument(
   db: Db,
   documentId: string,
   actorId: string,
   targetUsername: string,
   role: ShareRole,
-): void {
-  requireAccess(db, documentId, actorId, "owner");
+): Promise<void> {
+  await requireAccess(db, documentId, actorId, "owner");
 
-  const target = findUserByUsername(db, targetUsername);
+  const target = await findUserByUsername(db, targetUsername);
   if (!target) throw new AppError(404, `No user named "${targetUsername.trim().toLowerCase()}"`);
 
-  const owner = db.prepare("SELECT owner_id FROM documents WHERE id = ?").get(documentId) as { owner_id: string };
-  if (target.id === owner.owner_id) throw new AppError(400, "The owner already has full access");
+  const owner = await first<{ owner_id: string }>(db, "SELECT owner_id FROM documents WHERE id = ?", [documentId]);
+  if (target.id === owner?.owner_id) throw new AppError(400, "The owner already has full access");
 
-  db.prepare(
-    `INSERT INTO document_shares (document_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
-     ON CONFLICT (document_id, user_id) DO UPDATE SET role = excluded.role`,
-  ).run(documentId, target.id, role, new Date().toISOString());
+  await db.execute({
+    sql: `INSERT INTO document_shares (document_id, user_id, role, created_at) VALUES (?, ?, ?, ?)
+          ON CONFLICT (document_id, user_id) DO UPDATE SET role = excluded.role`,
+    args: [documentId, target.id, role, new Date().toISOString()],
+  });
 }
 
-export function unshareDocument(db: Db, documentId: string, actorId: string, targetUserId: string): void {
-  requireAccess(db, documentId, actorId, "owner");
-  db.prepare("DELETE FROM document_shares WHERE document_id = ? AND user_id = ?").run(documentId, targetUserId);
+export async function unshareDocument(db: Db, documentId: string, actorId: string, targetUserId: string): Promise<void> {
+  await requireAccess(db, documentId, actorId, "owner");
+  await db.execute({
+    sql: "DELETE FROM document_shares WHERE document_id = ? AND user_id = ?",
+    args: [documentId, targetUserId],
+  });
 }

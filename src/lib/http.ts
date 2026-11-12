@@ -9,14 +9,14 @@ import type { SessionUser } from "./types";
 // suitable for this assessment. A real deployment would use a signed session or an identity provider.
 export const SESSION_COOKIE = "ajaia_session";
 
-export function currentUser(req: NextRequest, db: Db): SessionUser | null {
+export async function currentUser(req: NextRequest, db: Db): Promise<SessionUser | null> {
   const id = req.cookies.get(SESSION_COOKIE)?.value;
   if (!id) return null;
-  return findUserById(db, id) ?? null;
+  return (await findUserById(db, id)) ?? null;
 }
 
-export function requireUser(req: NextRequest, db: Db): SessionUser {
-  const user = currentUser(req, db);
+export async function requireUser(req: NextRequest, db: Db): Promise<SessionUser> {
+  const user = await currentUser(req, db);
   if (!user) throw new AppError(401, "Sign in to continue");
   return user;
 }

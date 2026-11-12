@@ -6,9 +6,9 @@ import { createDocumentSchema } from "@/lib/validation";
 
 export async function GET(req: NextRequest) {
   try {
-    const db = getDb();
-    const user = requireUser(req, db);
-    return NextResponse.json(listDocumentsForUser(db, user.id));
+    const db = await getDb();
+    const user = await requireUser(req, db);
+    return NextResponse.json(await listDocumentsForUser(db, user.id));
   } catch (err) {
     return errorResponse(err);
   }
@@ -16,10 +16,10 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const db = getDb();
-    const user = requireUser(req, db);
+    const db = await getDb();
+    const user = await requireUser(req, db);
     const body = createDocumentSchema.parse((await readJson(req).catch(() => ({}))) ?? {});
-    const id = createDocument(db, user.id, { title: body.title });
+    const id = await createDocument(db, user.id, { title: body.title });
     return NextResponse.json({ id }, { status: 201 });
   } catch (err) {
     return errorResponse(err);

@@ -1,34 +1,40 @@
-import Database from "better-sqlite3";
+import { createClient, type Client } from "@libsql/client";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-export type Db = Database.Database;
+export type Db = Client;
 
-const globalForDb = globalThis as unknown as { __ajaiaDb?: Db };
+const globalForDb = globalThis as unknown as { __ajaiaDb?: Promise<Db> };
 
-/** Shared database handle for the running server (one per process). */
-export function getDb(): Db {
-  if (!globalForDb.__ajaiaDb) {
-    const file = process.env.DATA_FILE ?? path.join(process.cwd(), "data", "app.db");
-    globalForDb.__ajaiaDb = openDatabase(file);
-  }
+/**
+ * Shared database connection for the running server (one per process).
+ * Uses Turso when TURSO_DATABASE_URL is set (production), otherwise a local SQLite file (development).
+ */
+export function getDb(): Promise<Db> {
+  if (!globalForDb.__ajaiaDb) globalForDb.__ajaiaDb = connect();
   return globalForDb.__ajaiaDb;
 }
 
-/** Opens (and migrates + seeds) a database file. Use ":memory:" in tests. */
-export function openDatabase(file: string): Db {
-  if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new Database(file);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  migrate(db);
-  seed(db);
+async function connect(): Promise<Db> {
+  const remote = process.env.TURSO_DATABASE_URL;
+  if (remote) return openDatabase(remote, process.env.TURSO_AUTH_TOKEN);
+
+  const file = path.join(process.cwd(), "data", "app.db");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  return openDatabase(`file:${file}`);
+}
+
+/** Opens (and migrates + seeds) a database. Use ":memory:" in tests. */
+export async function openDatabase(url: string, authToken?: string): Promise<Db> {
+  const db = createClient({ url, authToken });
+  await migrate(db);
+  await seed(db);
   return db;
 }
 
-function migrate(db: Db) {
-  db.exec(`
+async function migrate(db: Db) {
+  await db.executeMultiple(`
     CREATE TABLE IF NOT EXISTS users (
       id           TEXT PRIMARY KEY,
       username     TEXT NOT NULL UNIQUE,
@@ -45,8 +51,8 @@ function migrate(db: Db) {
     );
 
     CREATE TABLE IF NOT EXISTS document_shares (
-      document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-      user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      document_id TEXT NOT NULL REFERENCES documents(id),
+      user_id     TEXT NOT NULL REFERENCES users(id),
       role        TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
       created_at  TEXT NOT NULL,
       PRIMARY KEY (document_id, user_id)
@@ -63,33 +69,44 @@ const SEED_USERS = [
   { username: "carol", displayName: "Carol Singh" },
 ];
 
-/** Seeds demo accounts and one sample document the first time the DB is created. */
-function seed(db: Db) {
-  const count = db.prepare("SELECT COUNT(*) AS n FROM users").get() as { n: number };
-  if (count.n > 0) return;
-
-  const insertUser = db.prepare("INSERT INTO users (id, username, display_name) VALUES (?, ?, ?)");
-  for (const u of SEED_USERS) insertUser.run(`usr_${u.username}`, u.username, u.displayName);
+/** Seeds demo accounts and one sample document the first time the database is created. */
+async function seed(db: Db) {
+  const count = await db.execute("SELECT COUNT(*) AS n FROM users");
+  if (Number(count.rows[0][0]) > 0) return;
 
   const now = new Date().toISOString();
   const docId = randomUUID();
-  db.prepare(
-    `INSERT INTO documents (id, title, content_html, owner_id, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(
-    docId,
-    "Welcome to Ajaia Docs",
-    "<h1>Welcome to Ajaia Docs</h1>" +
-      "<p>This document is owned by <strong>Alice</strong>. It is shared with <em>Bob</em> (can edit) and <u>Carol</u> (view only).</p>" +
-      "<h2>Try it out</h2>" +
-      "<ul><li>Format text with the toolbar</li><li>Rename the document at the top</li><li>Import a .txt or .md file from the dashboard</li></ul>",
-    "usr_alice",
-    now,
-    now,
+
+  await db.batch(
+    [
+      ...SEED_USERS.map((u) => ({
+        sql: "INSERT INTO users (id, username, display_name) VALUES (?, ?, ?)",
+        args: [`usr_${u.username}`, u.username, u.displayName],
+      })),
+      {
+        sql: `INSERT INTO documents (id, title, content_html, owner_id, created_at, updated_at)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [
+          docId,
+          "Welcome to Ajaia Docs",
+          "<h1>Welcome to Ajaia Docs</h1>" +
+            "<p>This document is owned by <strong>Alice</strong>. It is shared with <em>Bob</em> (can edit) and <u>Carol</u> (view only).</p>" +
+            "<h2>Try it out</h2>" +
+            "<ul><li>Format text with the toolbar</li><li>Rename the document at the top</li><li>Import a .txt or .md file from the dashboard</li></ul>",
+          "usr_alice",
+          now,
+          now,
+        ],
+      },
+      {
+        sql: "INSERT INTO document_shares (document_id, user_id, role, created_at) VALUES (?, ?, ?, ?)",
+        args: [docId, "usr_bob", "editor", now],
+      },
+      {
+        sql: "INSERT INTO document_shares (document_id, user_id, role, created_at) VALUES (?, ?, ?, ?)",
+        args: [docId, "usr_carol", "viewer", now],
+      },
+    ],
+    "write",
   );
-  const insertShare = db.prepare(
-    "INSERT INTO document_shares (document_id, user_id, role, created_at) VALUES (?, ?, ?, ?)",
-  );
-  insertShare.run(docId, "usr_bob", "editor", now);
-  insertShare.run(docId, "usr_carol", "viewer", now);
 }
