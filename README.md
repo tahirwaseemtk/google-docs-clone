@@ -1,6 +1,6 @@
 # Ajaia Docs
 
-A lightweight collaborative document editor built with Next.js (App Router), TypeScript, and SQLite.
+A lightweight collaborative document editor built with Next.js (App Router), TypeScript, and a libSQL database (Turso in production, a local SQLite file in development).
 Users can create, rename, edit, and format documents, import `.txt` / `.md` files, and share documents with teammates.
 
 ## Features
@@ -11,7 +11,7 @@ Users can create, rename, edit, and format documents, import `.txt` / `.md` file
 - **Import** a `.txt` or `.md` file as a new document. Markdown headings, lists, and emphasis are converted. Limit: **1 MB**. Other file types are rejected with a clear message.
 - **Sharing**: the owner shares a document with another user as **Can edit** or **View only**, changes the role, or removes access. Viewers get a read-only editor. Users without access get a 404 (the document's existence is not revealed).
 - **Owned vs. shared**: the dashboard lists "My documents" and "Shared with me" separately, with role badges.
-- **Persistence**: documents, shares, and users are stored in SQLite and survive refresh and restart.
+- **Persistence**: documents, shares, and users are stored in a database and survive refresh, restart, and redeploy.
 
 ## Quick start (local)
 
@@ -22,7 +22,7 @@ npm install
 npm run dev          # http://localhost:3000
 ```
 
-Open http://localhost:3000 and pick a demo account on the sign-in screen. No password is needed.
+Locally, with no Turso settings, the app stores data in `data/app.db` (a SQLite file). Open http://localhost:3000 and pick a demo account on the sign-in screen. No password is needed.
 
 | Account | Name | Sample access |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ To see sharing in action: sign in as Alice, open the Welcome document, click **S
 ### Other scripts
 
 ```bash
-npm test             # unit and integration tests (Vitest)
+npm test             # unit and integration tests (Vitest, 17 tests)
 npm run typecheck    # TypeScript check without emitting files
 npm run build        # production build
 npm start            # run the production build (after npm run build)
@@ -43,21 +43,24 @@ npm start            # run the production build (after npm run build)
 
 ### Configuration
 
-| Variable | Default | Purpose |
+| Variable | Required | Purpose |
 | --- | --- | --- |
-| `DATA_FILE` | `./data/app.db` | Path to the SQLite database file. Put this on a persistent disk in production. |
+| `TURSO_DATABASE_URL` | Production | Turso database URL, for example `libsql://<name>-<org>.turso.io`. If unset, the app uses the local file `data/app.db`. |
+| `TURSO_AUTH_TOKEN` | Production | Turso database token with read and write access. Keep it secret. |
 
-The database and its seed data are created automatically on first run. To reset, stop the server and delete the `data/` folder.
+The tables and demo data are created automatically on first start. To reset a local database, stop the server and delete the `data/` folder.
 
-## Deployment
+## Deployment (Vercel + Turso)
 
-The app needs a **long-running Node server with a persistent disk**, because SQLite is a file. Serverless platforms with ephemeral filesystems (such as Vercel's default functions) will lose data between requests.
+Vercel runs the app as serverless functions, which can't keep a SQLite file. The data lives in a hosted Turso database instead.
 
-Suggested path: **Render** (or Railway / Fly.io) as a Node web service.
+1. **Create a Turso database** at turso.tech. Copy its URL, and create a database token with read and write access.
+2. **Push this repository** to GitHub.
+3. **Import the repo in Vercel**: *Add New → Project*, select the repository. Keep the default Next.js settings (build command `next build`, output handled automatically).
+4. **Add environment variables** in Vercel (*Settings → Environment Variables*): `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`.
+5. **Deploy.** Vercel gives you a `*.vercel.app` URL. Open it and sign in as a demo account to confirm the data loads.
 
-1. Build command: `npm install && npm run build`
-2. Start command: `npm start`
-3. Set `DATA_FILE=/var/data/app.db` and attach a persistent disk mounted at `/var/data`.
+If you ever paste a token into a chat or commit it by mistake, rotate it in Turso and update the Vercel variable. Tokens are never stored in the repository.
 
 ## Supported file types and limits
 
@@ -80,7 +83,7 @@ src/
   components/
     document-editor.tsx       Editor, toolbar, autosave, share panel
   lib/
-    db.ts                     SQLite connection, migrations, seed data
+    db.ts                     Database connection (Turso or local file), migrations, seed data
     store.ts                  Document, sharing, and access rules (the only place they live)
     content.ts                HTML sanitization, Markdown and text conversion
     validation.ts             Zod schemas and upload limits
@@ -88,7 +91,7 @@ src/
     api-client.ts             Fetch wrapper for the browser
     types.ts                  Types shared by client and server
 tests/
-  store.test.ts               Access control, sharing, persistence
+  store.test.ts               Access control, sharing, persistence, delete cleanup
   content.test.ts             Sanitization and import conversion
 ```
 
